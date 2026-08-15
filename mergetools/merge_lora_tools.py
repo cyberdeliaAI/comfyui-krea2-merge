@@ -330,6 +330,7 @@ class Krea2MergeSaveLoRA:
             "required": {
                 "merged_model": ("MODEL", ),
                 "modeloutput": ("STRING", {"default": "krea2_merged_lora.safetensors"}),
+                "allow_overwrite": (["no", "yes"], {"default": "no"}),
             }
         }
     RETURN_TYPES = ("STRING",)
@@ -338,10 +339,15 @@ class Krea2MergeSaveLoRA:
     CATEGORY = "Krea2 Merge/LoRA"
     OUTPUT_NODE = True
 
-    def save(self, merged_model, modeloutput):
+    def save(self, merged_model, modeloutput, allow_overwrite="no"):
         if not os.path.isabs(modeloutput):
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             modeloutput = os.path.join(OUTPUT_DIR, modeloutput)
+        if os.path.exists(modeloutput) and allow_overwrite != "yes":
+            raise FileExistsError(
+                f"LoRA output already exists: {modeloutput}. "
+                "Set allow_overwrite to yes to replace it."
+            )
         if modeloutput.endswith('.safetensors'):
             if not safetensors_available or safe_save is None:
                 raise ImportError('pip install safetensors to save .safetensors')

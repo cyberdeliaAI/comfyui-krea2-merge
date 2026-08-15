@@ -255,7 +255,7 @@
       ],
       "size": [
         300,
-        58
+        82
       ],
       "flags": {},
       "order": 3,
@@ -277,6 +277,16 @@
             "name": "modeloutput"
           },
           "link": null
+        },
+        {
+          "label": "allow_overwrite",
+          "localized_name": "allow_overwrite",
+          "name": "allow_overwrite",
+          "type": "COMBO",
+          "widget": {
+            "name": "allow_overwrite"
+          },
+          "link": null
         }
       ],
       "outputs": [
@@ -295,7 +305,8 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        "krea2_merged_lora.safetensors"
+        "krea2_merged_lora.safetensors",
+        "yes"
       ]
     },
     {

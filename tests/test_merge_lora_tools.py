@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -117,6 +118,26 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no supported LoRA weights"):
             self.merge(unsupported, unsupported)
 
+
+    def test_save_refuses_to_overwrite_existing_file_by_default(self):
+        saver = Krea2MergeSaveLoRA()
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, "existing.pt")
+            with open(output, "wb") as existing_file:
+                existing_file.write(b"keep")
+            with self.assertRaisesRegex(FileExistsError, "allow_overwrite"):
+                saver.save({}, output, "no")
+
+    def test_save_overwrites_when_enabled(self):
+        saver = Krea2MergeSaveLoRA()
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, "existing.pt")
+            with open(output, "wb") as existing_file:
+                existing_file.write(b"replace")
+            with patch("mergetools.merge_lora_tools.torch.save") as save_mock:
+                result = saver.save({}, output, "yes")
+            save_mock.assert_called_once_with({}, output)
+            self.assertEqual(result, (output,))
 
     def test_save_node_is_registered_as_output(self):
         self.assertTrue(Krea2MergeSaveLoRA.OUTPUT_NODE)

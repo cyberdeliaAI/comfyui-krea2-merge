@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.2 - 2026-08-15
+
+- Added a working `allow_overwrite` switch to the Save LoRA node.
+- Refuse to replace an existing output when the switch is `no`; overwrite it
+  when the switch is `yes`.
+- Enabled overwrite in the bundled example workflow for repeatable runs.
+
 ## 1.0.1 - 2026-08-15
 
 - Restored the Show Text node and saved-path connection in the example workflow.

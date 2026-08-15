@@ -56,6 +56,8 @@ collide with the original extension.
    that matches your Krea 2 setup.
 5. Connect **Krea2 Merge • Save LoRA** and choose a filename ending in
    `.safetensors`.
+6. Set `allow_overwrite` to `yes` when repeated runs should replace the same
+   output file. Keep it on `no` to protect an existing merge.
 
 An example is included at `workflow-examples/krea2-lora-merger.json`.
 
