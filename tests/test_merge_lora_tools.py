@@ -118,7 +118,6 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no supported LoRA weights"):
             self.merge(unsupported, unsupported)
 
-
     def test_save_refuses_to_overwrite_existing_file_by_default(self):
         saver = Krea2MergeSaveLoRA()
         with tempfile.TemporaryDirectory() as directory:
@@ -134,10 +133,40 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
             output = os.path.join(directory, "existing.pt")
             with open(output, "wb") as existing_file:
                 existing_file.write(b"replace")
-            with patch("mergetools.merge_lora_tools.torch.save") as save_mock:
+
+            def write_replacement(_model, path):
+                with open(path, "wb") as replacement_file:
+                    replacement_file.write(b"replacement")
+
+            with patch(
+                "mergetools.merge_lora_tools.torch.save",
+                side_effect=write_replacement,
+            ) as save_mock:
                 result = saver.save({}, output, "yes")
+
             save_mock.assert_called_once_with({}, output)
             self.assertEqual(result, (output,))
+            with open(output, "rb") as saved_file:
+                self.assertEqual(saved_file.read(), b"replacement")
+            self.assertFalse(any(".backup-" in name for name in os.listdir(directory)))
+
+    def test_save_restores_original_when_overwrite_fails(self):
+        saver = Krea2MergeSaveLoRA()
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, "existing.pt")
+            with open(output, "wb") as existing_file:
+                existing_file.write(b"original")
+
+            with patch(
+                "mergetools.merge_lora_tools.torch.save",
+                side_effect=RuntimeError("simulated save failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "simulated save failure"):
+                    saver.save({}, output, "yes")
+
+            with open(output, "rb") as restored_file:
+                self.assertEqual(restored_file.read(), b"original")
+            self.assertFalse(any(".backup-" in name for name in os.listdir(directory)))
 
     def test_save_node_is_registered_as_output(self):
         self.assertTrue(Krea2MergeSaveLoRA.OUTPUT_NODE)

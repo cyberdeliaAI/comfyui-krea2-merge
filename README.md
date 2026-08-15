@@ -59,6 +59,10 @@ collide with the original extension.
 6. Set `allow_overwrite` to `yes` when repeated runs should replace the same
    output file. Keep it on `no` to protect an existing merge.
 
+On Windows, overwrite first moves the previous output to a temporary backup. If
+the new save fails, the original file is restored automatically. If Windows has
+the destination open or memory-mapped, use another filename or restart ComfyUI.
+
 An example is included at `workflow-examples/krea2-lora-merger.json`.
 
 The example includes **Show Text** from

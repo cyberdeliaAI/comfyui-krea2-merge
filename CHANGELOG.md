@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.4 - 2026-08-15
+
+- Fixed `allow_overwrite=yes` on Windows for existing safetensors files.
+- Moved the previous output to a temporary backup before saving, restore it if
+  saving fails, and remove the backup after a successful save.
+- Added a clear error when Windows has the destination file open or memory-mapped.
+
+## 1.0.3 - 2026-08-15
+
+- Added the Comfy Registry icon and icon metadata.
+
 ## 1.0.2 - 2026-08-15
 
 - Added a working `allow_overwrite` switch to the Save LoRA node.

@@ -40,6 +40,7 @@ ComfyUI/custom_nodes/comfyui-krea2-merge
 示例工作流包含来自 `ComfyUI-Custom-Scripts` 的 **Show Text** 节点，用于显示保存路径。
 Save 节点本身也已注册为输出节点。
 Save 节点的 `allow_overwrite` 可控制是否覆盖已存在的输出文件。
+在 Windows 上，覆盖前会先备份原文件；保存失败时会自动恢复。
 
 ## 兼容性
 

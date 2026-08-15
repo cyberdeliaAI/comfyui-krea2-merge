@@ -1,6 +1,7 @@
 import torch
 import os
 import math
+import uuid
 import folder_paths
 
 # -------------------------------------------------------------------
@@ -343,17 +344,50 @@ class Krea2MergeSaveLoRA:
         if not os.path.isabs(modeloutput):
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             modeloutput = os.path.join(OUTPUT_DIR, modeloutput)
-        if os.path.exists(modeloutput) and allow_overwrite != "yes":
-            raise FileExistsError(
-                f"LoRA output already exists: {modeloutput}. "
-                "Set allow_overwrite to yes to replace it."
-            )
-        if modeloutput.endswith('.safetensors'):
-            if not safetensors_available or safe_save is None:
-                raise ImportError('pip install safetensors to save .safetensors')
-            safe_save(merged_model, modeloutput)
+
+        backup_path = None
+        if os.path.exists(modeloutput):
+            if allow_overwrite != "yes":
+                raise FileExistsError(
+                    f"LoRA output already exists: {modeloutput}. "
+                    "Set allow_overwrite to yes to replace it."
+                )
+            backup_path = f"{modeloutput}.backup-{uuid.uuid4().hex}"
+            try:
+                os.replace(modeloutput, backup_path)
+            except OSError as error:
+                raise PermissionError(
+                    f"Cannot overwrite LoRA output: {modeloutput}. The file may be "
+                    "open or memory-mapped by a LoRA loader. Choose another filename "
+                    "or restart ComfyUI, then try again."
+                ) from error
+
+        try:
+            if modeloutput.endswith(".safetensors"):
+                if not safetensors_available or safe_save is None:
+                    raise ImportError("pip install safetensors to save .safetensors")
+                safe_save(merged_model, modeloutput)
+            else:
+                torch.save(merged_model, modeloutput)
+        except Exception:
+            if backup_path and os.path.exists(backup_path):
+                try:
+                    if os.path.exists(modeloutput):
+                        os.remove(modeloutput)
+                    os.replace(backup_path, modeloutput)
+                except OSError as restore_error:
+                    raise RuntimeError(
+                        "Saving failed and the original file could not be restored "
+                        f"automatically. Its backup is at: {backup_path}"
+                    ) from restore_error
+            raise
         else:
-            torch.save(merged_model, modeloutput)
+            if backup_path and os.path.exists(backup_path):
+                try:
+                    os.remove(backup_path)
+                except OSError as cleanup_error:
+                    print(f"Krea2 Merge warning: could not remove backup: {cleanup_error}")
+
         print(f"LoRA model saved to {modeloutput}")
         return (modeloutput,)
     
