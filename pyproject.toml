@@ -1,0 +1,20 @@
+[project]
+name = "comfyui-krea2-merge"
+description = "ComfyUI nodes for loading, merging, and saving Krea 2 PEFT/Diffusers and Kohya LoRAs."
+version = "1.0.0"
+authors = [{name = "Cyberdelia"}]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["safetensors"]
+
+[project.urls]
+Repository = "https://github.com/cyberdeliaAI/comfyui-krea2-merge"
+Original-Source = "https://github.com/LingSss9/comfyui-merge"
+#  Used by Comfy Registry https://registry.comfy.org
+
+[tool.comfy]
+PublisherId = "cyberdelia"
+DisplayName = "ComfyUI Krea2 Merge"
+Icon = ""
+includes = []
