@@ -16,5 +16,5 @@ Original-Source = "https://github.com/LingSss9/comfyui-merge"
 [tool.comfy]
 PublisherId = "cyberdelia"
 DisplayName = "ComfyUI Krea2 Merge"
-Icon = ""
+Icon = "https://raw.githubusercontent.com/cyberdeliaAI/comfyui-krea2-merge/main/assets/icon.png"
 includes = []
