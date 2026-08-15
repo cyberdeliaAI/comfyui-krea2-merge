@@ -13,7 +13,7 @@ folder_paths.get_filename_list = lambda _kind: []
 folder_paths.get_full_path = lambda _kind, name: os.path.join(tempfile.gettempdir(), name)
 sys.modules.setdefault("folder_paths", folder_paths)
 
-from mergetools.merge_lora_tools import Krea2MergeLoRAs
+from mergetools.merge_lora_tools import Krea2MergeLoRAs, Krea2MergeSaveLoRA
 
 
 class Krea2MergeLoRAsTests(unittest.TestCase):
@@ -116,6 +116,10 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "no supported LoRA weights"):
             self.merge(unsupported, unsupported)
+
+
+    def test_save_node_is_registered_as_output(self):
+        self.assertTrue(Krea2MergeSaveLoRA.OUTPUT_NODE)
 
 
 if __name__ == "__main__":

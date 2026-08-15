@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 - 2026-08-15
+
+- Restored the Show Text node and saved-path connection in the example workflow.
+- Registered Krea2 Merge Save LoRA as a ComfyUI output node so it also runs
+  without an attached display node.
+
 ## 1.0.0 - 2026-08-15
 
 - Rebranded the extension as ComfyUI Krea2 Merge.

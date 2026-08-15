@@ -336,6 +336,7 @@ class Krea2MergeSaveLoRA:
     RETURN_NAMES = ("saved_path",)
     FUNCTION = "save"
     CATEGORY = "Krea2 Merge/LoRA"
+    OUTPUT_NODE = True
 
     def save(self, merged_model, modeloutput):
         if not os.path.isabs(modeloutput):

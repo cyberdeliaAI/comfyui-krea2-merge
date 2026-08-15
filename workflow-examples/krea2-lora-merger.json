@@ -2,7 +2,7 @@
   "id": "fbef9f94-d732-48c1-8ea9-50dd13925ad2",
   "revision": 0,
   "last_node_id": 12,
-  "last_link_id": 10,
+  "last_link_id": 11,
   "nodes": [
     {
       "id": 7,
@@ -285,7 +285,9 @@
           "localized_name": "saved_path",
           "name": "saved_path",
           "type": "STRING",
-          "links": null
+          "links": [
+            11
+          ]
         }
       ],
       "properties": {
@@ -295,6 +297,45 @@
       "widgets_values": [
         "krea2_merged_lora.safetensors"
       ]
+    },
+    {
+      "id": 11,
+      "type": "ShowText|pysssss",
+      "pos": [
+        600,
+        -120
+      ],
+      "size": [
+        310,
+        180
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "text",
+          "name": "text",
+          "type": "STRING",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "label": "STRING",
+          "localized_name": "STRING",
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "Node name for S&R": "ShowText|pysssss",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": []
     }
   ],
   "links": [
@@ -321,6 +362,14 @@
       12,
       0,
       "MODEL"
+    ],
+    [
+      11,
+      12,
+      0,
+      11,
+      0,
+      "STRING"
     ]
   ],
   "groups": [],

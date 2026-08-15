@@ -37,6 +37,9 @@ ComfyUI/custom_nodes/comfyui-krea2-merge
 - **Krea2 Merge • Save LoRA**
 - **Krea2 Merge • Apply LoRA**
 
+示例工作流包含来自 `ComfyUI-Custom-Scripts` 的 **Show Text** 节点，用于显示保存路径。
+Save 节点本身也已注册为输出节点。
+
 ## 兼容性
 
 共享键的输入 LoRA 必须具有相同的张量形状，通常意味着它们使用相同的

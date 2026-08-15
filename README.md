@@ -59,6 +59,11 @@ collide with the original extension.
 
 An example is included at `workflow-examples/krea2-lora-merger.json`.
 
+The example includes **Show Text** from
+[ComfyUI-Custom-Scripts](https://github.com/pythongosssss/ComfyUI-Custom-Scripts)
+to display the saved path. The Save node is also registered as an output node, so
+saving still works when Show Text is removed from a custom workflow.
+
 ## Compatibility notes
 
 - Input LoRAs must use matching tensor shapes for keys they share. In practice,
