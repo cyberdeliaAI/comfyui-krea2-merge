@@ -34,6 +34,20 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
             save_dtype="float",
         )[0]
 
+    def exact_merge(self, model1, model2, weight1=1.0, weight2=1.0,
+                    force_same_strength="no"):
+        return self.merger.merge(
+            model1=model1,
+            weight1=weight1,
+            model2=model2,
+            weight2=weight2,
+            weight3=0.0,
+            weight4=0.0,
+            force_same_strength=force_same_strength,
+            save_dtype="float",
+            merge_mode="exact_concat",
+        )[0]
+
     def peft_model(self, a_value, b_value, rank=2):
         return {
             f"{self.module}.lora_A.weight": torch.full((rank, 3), a_value),
@@ -110,6 +124,61 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
     def test_reports_mismatched_krea2_ranks_clearly(self):
         with self.assertRaisesRegex(ValueError, "tensor shapes differ"):
             self.merge(self.peft_model(1.0, 1.0, rank=2), self.peft_model(1.0, 1.0, rank=4))
+
+    def test_exact_concat_supports_different_ranks(self):
+        first = self.peft_model(1.0, 2.0, rank=2)
+        second = self.peft_model(3.0, 4.0, rank=4)
+
+        merged = self.exact_merge(first, second, weight1=0.5, weight2=0.25)
+
+        down_key = f"{self.module}.lora_A.weight"
+        up_key = f"{self.module}.lora_B.weight"
+        self.assertEqual(tuple(merged[down_key].shape), (6, 3))
+        self.assertEqual(tuple(merged[up_key].shape), (4, 6))
+        self.assertEqual(merged[f"{self.module}.alpha"].item(), 6.0)
+
+        expected_delta = (
+            0.5 * (first[up_key] @ first[down_key])
+            + 0.25 * (second[up_key] @ second[down_key])
+        )
+        output_scale = merged[f"{self.module}.alpha"] / merged[down_key].size(0)
+        actual_delta = output_scale * (merged[up_key] @ merged[down_key])
+        torch.testing.assert_close(actual_delta, expected_delta)
+
+    def test_exact_concat_uses_explicit_alpha_and_negative_weights(self):
+        first = self.peft_model(1.0, 2.0, rank=2)
+        second = self.peft_model(3.0, 4.0, rank=4)
+        first[f"{self.module}.alpha"] = torch.tensor(1.0)
+        second[f"{self.module}.alpha"] = torch.tensor(2.0)
+
+        merged = self.exact_merge(first, second, weight1=0.5, weight2=-0.25)
+
+        down_key = f"{self.module}.lora_A.weight"
+        up_key = f"{self.module}.lora_B.weight"
+        expected_delta = (
+            0.5 * (1.0 / 2.0) * (first[up_key] @ first[down_key])
+            - 0.25 * (2.0 / 4.0) * (second[up_key] @ second[down_key])
+        )
+        actual_delta = merged[up_key] @ merged[down_key]
+        torch.testing.assert_close(actual_delta, expected_delta)
+
+    def test_exact_concat_result_is_equivalent_when_inputs_are_reversed(self):
+        first = self.peft_model(1.0, 2.0, rank=2)
+        second = self.peft_model(3.0, 4.0, rank=4)
+        forward = self.exact_merge(first, second, weight1=0.5, weight2=0.25)
+        reverse = self.exact_merge(second, first, weight1=0.25, weight2=0.5)
+
+        down_key = f"{self.module}.lora_A.weight"
+        up_key = f"{self.module}.lora_B.weight"
+        torch.testing.assert_close(
+            forward[up_key] @ forward[down_key],
+            reverse[up_key] @ reverse[down_key],
+        )
+
+    def test_exact_concat_rejects_incomplete_pairs(self):
+        incomplete = {f"{self.module}.lora_A.weight": torch.ones((2, 3))}
+        with self.assertRaisesRegex(ValueError, "complete LoRA pairs"):
+            self.exact_merge(incomplete, self.peft_model(1.0, 1.0))
 
     def test_rejects_unsupported_adapter_state_dict(self):
         key = f"{self.module}.lora_magnitude_vector.weight"

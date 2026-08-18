@@ -27,6 +27,10 @@ OUTPUT_DIR = os.path.join(lora_base_path, "krea2-merged-loras")
 LORA_DOWN_MARKERS = ('.lora_down', '.lora_A')
 LORA_UP_MARKERS = ('.lora_up', '.lora_B')
 LORA_WEIGHT_MARKERS = LORA_DOWN_MARKERS + LORA_UP_MARKERS + ('.lora_mid',)
+LORA_PAIR_MARKERS = (
+    ('.lora_down', '.lora_up', 'kohya'),
+    ('.lora_A', '.lora_B', 'peft'),
+)
 
 
 def _lora_module_from_key(key):
@@ -48,6 +52,16 @@ def _rank_from_weight(key, tensor):
 
 def _is_up_weight(key):
     return any(marker in key for marker in LORA_UP_MARKERS)
+
+
+def _lora_pair_info(key):
+    """Return (module, role, style) for a paired LoRA factor key."""
+    for down_marker, up_marker, style in LORA_PAIR_MARKERS:
+        if down_marker in key:
+            return key[:key.find(down_marker)], 'down', style
+        if up_marker in key:
+            return key[:key.find(up_marker)], 'up', style
+    return None
 
 # =============================================================================
 # Krea2MergeLoadLoRA
@@ -163,9 +177,9 @@ class Krea2MergeApplyLoRA:
 class Krea2MergeLoRAs:
     """Merge Krea 2/PEFT and Kohya LoRA state dictionaries.
 
-    * **Order‑independent** – A+B == B+A when ratios are the same.
-    * `force_same_strength=yes`  ⇒   ratio → √ratio (matches Web‑UI "Strength").
-    * Per‑module scaling by √(αᵢ / avgα) for more balanced feature retention.
+    * `legacy_linear` preserves the original factor-space merge behavior.
+    * `exact_concat` composes differently ranked LoRAs without changing the base model.
+    * `force_same_strength=yes` applies only to `legacy_linear`.
     * Supports both `lora_A/lora_B` (PEFT/Diffusers, including Krea 2) and
       `lora_down/lora_up` (Kohya) keys.
     """
@@ -182,6 +196,7 @@ class Krea2MergeLoRAs:
                 "weight4": ("FLOAT", {"default": 0.00,"step": 0.01}),
                 "force_same_strength": (["no", "yes"], {"default": "no"}),
                 "save_dtype": (["fp16", "float", "bf16"], {"default": "fp16"}),
+                "merge_mode": (["legacy_linear", "exact_concat"], {"default": "legacy_linear"}),
             },
             "optional": {
                 "model3": ("MODEL",),
@@ -229,11 +244,140 @@ class Krea2MergeLoRAs:
                     alphas[module] = float(rank)
 
         return alphas
+
+    def _paired_lora_modules(self, state_dict, input_index):
+        """Collect complete A/B or down/up pairs for exact concatenation."""
+        pairs = {}
+
+        for key, tensor in state_dict.items():
+            if '.lora_mid' in key:
+                raise ValueError(
+                    "exact_concat does not support LoCon lora_mid tensors. "
+                    "Use legacy_linear for LoRAs with lora_mid weights."
+                )
+
+            info = _lora_pair_info(key)
+            if info is None or not isinstance(tensor, torch.Tensor):
+                continue
+
+            module, role, style = info
+            pair = pairs.setdefault(module, {"style": style})
+            if pair["style"] != style:
+                raise ValueError(
+                    f"Input model {input_index} mixes PEFT and Kohya keys for "
+                    f"module '{module}', which exact_concat cannot pair safely."
+                )
+            if role in pair:
+                raise ValueError(
+                    f"Input model {input_index} has more than one {role} tensor "
+                    f"for module '{module}', which exact_concat cannot pair safely."
+                )
+            pair[role] = tensor
+            pair[f"{role}_key"] = key
+
+        for module, pair in pairs.items():
+            if "down" not in pair or "up" not in pair:
+                missing = "up/B" if "up" not in pair else "down/A"
+                raise ValueError(
+                    f"Input model {input_index} is missing the {missing} tensor "
+                    f"for module '{module}'. exact_concat needs complete LoRA pairs."
+                )
+
+            down = pair["down"]
+            up = pair["up"]
+            if down.ndim < 2 or up.ndim < 2:
+                raise ValueError(
+                    f"Invalid LoRA tensor dimensions for module '{module}': "
+                    f"down/A {tuple(down.shape)}, up/B {tuple(up.shape)}."
+                )
+            if down.size(0) != up.size(1):
+                raise ValueError(
+                    f"Inconsistent LoRA rank for module '{module}': down/A has "
+                    f"rank {down.size(0)}, up/B has rank {up.size(1)}."
+                )
+            pair["rank"] = down.size(0)
+
+        return pairs
+
+    def _merge_exact_concat(self, models_with_w, module_alphas_list, final_dtype,
+                            force_same_strength):
+        """Represent a weighted sum exactly by concatenating LoRA ranks."""
+        if force_same_strength == "yes":
+            print(
+                "Krea2 Merge: force_same_strength is ignored by exact_concat; "
+                "weights are applied directly."
+            )
+
+        paired_models = [
+            self._paired_lora_modules(sd, index)
+            for index, (sd, _) in enumerate(models_with_w, start=1)
+        ]
+        modules = sorted({module for pairs in paired_models for module in pairs})
+        if not modules:
+            raise ValueError(
+                "exact_concat found no complete lora_A/lora_B or "
+                "lora_down/lora_up pairs."
+            )
+
+        merged_sd = {}
+        for module in modules:
+            entries = []
+            for (_, ratio), alphas, pairs in zip(
+                models_with_w, module_alphas_list, paired_models
+            ):
+                pair = pairs.get(module)
+                if pair is not None:
+                    entries.append((pair, float(ratio), alphas[module]))
+
+            styles = {pair["style"] for pair, _, _ in entries}
+            if len(styles) != 1:
+                raise ValueError(
+                    f"Module '{module}' uses both PEFT and Kohya key styles. "
+                    "exact_concat requires one consistent style per module."
+                )
+
+            first_pair = entries[0][0]
+            down_shape = tuple(first_pair["down"].shape[1:])
+            up_shape = (
+                tuple(first_pair["up"].shape[:1])
+                + tuple(first_pair["up"].shape[2:])
+            )
+            down_parts = []
+            up_parts = []
+
+            for pair, ratio, alpha in entries:
+                down = pair["down"]
+                up = pair["up"]
+                current_down_shape = tuple(down.shape[1:])
+                current_up_shape = tuple(up.shape[:1]) + tuple(up.shape[2:])
+                if current_down_shape != down_shape or current_up_shape != up_shape:
+                    raise ValueError(
+                        f"Cannot exact-concat module '{module}': non-rank tensor "
+                        f"dimensions differ (down/A {tuple(down.shape)}, "
+                        f"up/B {tuple(up.shape)}). The LoRAs must target the "
+                        "same base-model layer."
+                    )
+
+                rank = pair["rank"]
+                down_parts.append(down.float())
+                up_parts.append(up.float() * (ratio * alpha / rank))
+
+            merged_down = torch.cat(down_parts, dim=0)
+            merged_up = torch.cat(up_parts, dim=1)
+            output_rank = merged_down.size(0)
+
+            merged_sd[first_pair["down_key"]] = merged_down.to(dtype=final_dtype)
+            merged_sd[first_pair["up_key"]] = merged_up.to(dtype=final_dtype)
+            merged_sd[f"{module}.alpha"] = torch.tensor(
+                float(output_rank), dtype=final_dtype
+            )
+
+        return merged_sd
     
     # ---------- main ----------
     def merge(self, model1, weight1, model2, weight2,
               weight3, weight4, force_same_strength, save_dtype,
-              model3=None, model4=None):
+              merge_mode="legacy_linear", model3=None, model4=None):
 
         models_with_w = [(model1, weight1), (model2, weight2)]
         if model3 is not None:
@@ -277,6 +421,18 @@ class Krea2MergeLoRAs:
         # dtype
         dtype_map = {"fp16": torch.float16, "float": torch.float32, "bf16": torch.bfloat16}
         final_dtype = dtype_map[save_dtype]
+
+        if merge_mode == "exact_concat":
+            return (
+                self._merge_exact_concat(
+                    models_with_w,
+                    module_alphas_list,
+                    final_dtype,
+                    force_same_strength,
+                ),
+            )
+        if merge_mode != "legacy_linear":
+            raise ValueError(f"Unknown merge mode: {merge_mode}")
 
         # --- 2. Actual merging ---
         merged_sd: dict[str, torch.Tensor] = {}

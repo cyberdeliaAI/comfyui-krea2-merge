@@ -125,7 +125,7 @@
       ],
       "size": [
         276.728515625,
-        286
+        312
       ],
       "flags": {},
       "order": 2,
@@ -220,6 +220,16 @@
             "name": "save_dtype"
           },
           "link": null
+        },
+        {
+          "label": "merge_mode",
+          "localized_name": "merge_mode",
+          "name": "merge_mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "merge_mode"
+          },
+          "link": null
         }
       ],
       "outputs": [
@@ -243,7 +253,8 @@
         0,
         0,
         "no",
-        "fp16"
+        "fp16",
+        "legacy_linear"
       ]
     },
     {

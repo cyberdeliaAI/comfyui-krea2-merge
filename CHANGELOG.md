@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0 - 2026-08-18
+
+- Added the optional `exact_concat` merge mode for LoRAs with different ranks.
+- Preserve `legacy_linear` as the default so existing workflows and outputs do
+  not change.
+- Apply exact weighted LoRA composition with output rank equal to the sum of
+  participating ranks (for example, rank 4 + rank 16 becomes rank 20).
+- Added validation for incomplete pairs, mixed key styles, non-rank dimension
+  mismatches, and unsupported LoCon `lora_mid` tensors in exact mode.
+- Added the new mode to the bundled workflow and regression tests.
+
 ## 1.0.4 - 2026-08-15
 
 - Fixed `allow_overwrite=yes` on Windows for existing safetensors files.
