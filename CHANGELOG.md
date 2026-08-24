@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0 - 2026-08-24
+
+- Made `exact_concat` the default merge mode for mathematically exact weighted
+  composition without cross terms.
+- Kept `legacy_linear` available for existing workflows and added a runtime
+  warning that it is an approximate compatibility mode.
+- Added explicit `-4.0` to `4.0` ranges so negative weights can be entered in
+  the ComfyUI frontend.
+- Changed new Merge nodes to balanced `0.5` / `0.5` weights; values stored in
+  existing workflows remain unchanged.
+- Reject DoRA and LoCon `lora_mid` adapters instead of silently dropping or
+  incorrectly scaling their auxiliary weights.
+- Warn when a connected third or fourth LoRA has a zero weight.
+- Reapply the saved folder filter after workflow configuration so filtered LoRA
+  lists display correctly after loading a workflow.
+- Updated the bundled workflow, tests, Registry metadata, and documentation.
+
 ## 1.1.0 - 2026-08-18
 
 - Added the optional `exact_concat` merge mode for LoRAs with different ranks.

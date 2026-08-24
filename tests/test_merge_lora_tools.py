@@ -32,6 +32,7 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
             weight4=0.0,
             force_same_strength="no",
             save_dtype="float",
+            merge_mode="legacy_linear",
         )[0]
 
     def exact_merge(self, model1, model2, weight1=1.0, weight2=1.0,
@@ -145,6 +146,57 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
         actual_delta = output_scale * (merged[up_key] @ merged[down_key])
         torch.testing.assert_close(actual_delta, expected_delta)
 
+    def test_exact_concat_is_the_default_merge_mode(self):
+        first = self.peft_model(1.0, 2.0, rank=2)
+        second = self.peft_model(3.0, 4.0, rank=4)
+
+        merged = self.merger.merge(
+            model1=first,
+            weight1=0.5,
+            model2=second,
+            weight2=0.5,
+            weight3=0.0,
+            weight4=0.0,
+            force_same_strength="no",
+            save_dtype="float",
+        )[0]
+
+        self.assertEqual(
+            tuple(merged[f"{self.module}.lora_A.weight"].shape),
+            (6, 3),
+        )
+        self.assertEqual(merged[f"{self.module}.alpha"].item(), 6.0)
+
+    def test_ui_allows_negative_weights_and_defaults_to_exact_concat(self):
+        required = self.merger.INPUT_TYPES()["required"]
+
+        for name in ("weight1", "weight2", "weight3", "weight4"):
+            options = required[name][1]
+            self.assertEqual(options["min"], -4.0)
+            self.assertEqual(options["max"], 4.0)
+        self.assertEqual(required["weight1"][1]["default"], 0.5)
+        self.assertEqual(required["weight2"][1]["default"], 0.5)
+        self.assertEqual(required["merge_mode"][1]["default"], "exact_concat")
+
+    def test_warns_when_connected_optional_lora_has_zero_weight(self):
+        with patch("builtins.print") as print_mock:
+            self.merger.merge(
+                model1=self.peft_model(1.0, 1.0),
+                weight1=0.5,
+                model2=self.peft_model(2.0, 2.0),
+                weight2=0.5,
+                model3=self.peft_model(3.0, 3.0),
+                weight3=0.0,
+                model4=None,
+                weight4=0.0,
+                force_same_strength="no",
+                save_dtype="float",
+            )
+
+        self.assertTrue(
+            any("model3 is connected" in call.args[0] for call in print_mock.call_args_list)
+        )
+
     def test_exact_concat_uses_explicit_alpha_and_negative_weights(self):
         first = self.peft_model(1.0, 2.0, rank=2)
         second = self.peft_model(3.0, 4.0, rank=4)
@@ -184,8 +236,22 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
         key = f"{self.module}.lora_magnitude_vector.weight"
         unsupported = {key: torch.ones(4)}
 
-        with self.assertRaisesRegex(ValueError, "no supported LoRA weights"):
+        with self.assertRaisesRegex(ValueError, "DoRA merging is not supported"):
             self.merge(unsupported, unsupported)
+
+    def test_rejects_dora_instead_of_silently_dropping_it(self):
+        dora = self.peft_model(1.0, 1.0)
+        dora[f"{self.module}.lora_magnitude_vector"] = torch.ones(4)
+
+        with self.assertRaisesRegex(ValueError, "DoRA merging is not supported"):
+            self.exact_merge(dora, self.peft_model(1.0, 1.0))
+
+    def test_rejects_locon_mid_instead_of_scaling_it_incorrectly(self):
+        locon = self.peft_model(1.0, 1.0)
+        locon[f"{self.module}.lora_mid.weight"] = torch.ones((2, 2, 1, 1))
+
+        with self.assertRaisesRegex(ValueError, "cannot be merged correctly"):
+            self.merge(locon, self.peft_model(1.0, 1.0))
 
     def test_save_refuses_to_overwrite_existing_file_by_default(self):
         saver = Krea2MergeSaveLoRA()

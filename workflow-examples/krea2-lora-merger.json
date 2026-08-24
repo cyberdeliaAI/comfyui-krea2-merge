@@ -248,13 +248,13 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        1,
-        1,
+        0.5,
+        0.5,
         0,
         0,
         "no",
         "fp16",
-        "legacy_linear"
+        "exact_concat"
       ]
     },
     {

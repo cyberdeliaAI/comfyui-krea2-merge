@@ -1,9 +1,9 @@
 # ComfyUI Krea2 Merge
 
-ComfyUI Krea2 Merge is a standalone set of nodes for loading, combining, and
-saving Krea 2 LoRAs. It supports the PEFT/Diffusers `lora_A` + `lora_B` keys
-used by Krea 2 LoRAs, while retaining support for Kohya
-`lora_down` + `lora_up` checkpoints.
+ComfyUI Krea2 Merge is a standalone set of nodes for exactly combining two to
+four Krea 2 LoRAs without loading or modifying the base model. It supports the
+PEFT/Diffusers `lora_A` + `lora_B` keys used by Krea 2 LoRAs, while retaining
+support for Kohya `lora_down` + `lora_up` checkpoints.
 
 This fork uses its own package name, extension name, node IDs, category, and
 output folder. It can therefore be installed alongside the original
@@ -16,7 +16,8 @@ output folder. It can therefore be installed alongside the original
 - Retain Kohya `lora_down` + `lora_up` compatibility.
 - Infer missing alpha values from the LoRA rank.
 - Handle negative merge weights correctly for both `lora_B` and `lora_up`.
-- Merge LoRAs with different ranks using the optional exact-concatenation mode.
+- Exactly merge LoRAs with equal or different ranks without unwanted cross terms.
+- Enter positive or negative weights from `-4.0` to `4.0`.
 - Report unsupported files and incompatible tensor shapes clearly.
 - Save to `ComfyUI/models/loras/krea2-merged-loras` by default.
 - Keep merge results independent of input order for equal weights.
@@ -53,8 +54,9 @@ collide with the original extension.
 2. Connect them to **Krea2 Merge • Merge LoRAs**.
 3. Set `weight1` and `weight2`. Optional third and fourth inputs use `weight3`
    and `weight4`.
-4. Select `legacy_linear` to keep the original merge behavior, or
-   `exact_concat` when the LoRAs have different ranks.
+4. Keep the default `exact_concat` for a mathematically exact weighted merge.
+   `legacy_linear` remains available only for compatibility with the original
+   approximate factor-space behavior.
 5. Select the output precision. `fp16` is the practical default; use `bf16` if
    that matches your Krea 2 setup.
 6. Connect **Krea2 Merge • Save LoRA** and choose a filename ending in
@@ -75,12 +77,14 @@ saving still works when Show Text is removed from a custom workflow.
 
 ## Compatibility notes
 
-- `legacy_linear` is the default and preserves all existing workflows and
-  factor-space results. Shared keys must have matching shapes and ranks.
-- `exact_concat` supports different ranks by concatenating complete A/B or
-  down/up pairs. A rank-4 plus rank-16 module becomes rank 20. This exactly
-  represents the weighted sum, but the larger output rank also increases file
-  size and runtime memory use.
+- `exact_concat` is the default. It concatenates complete A/B or down/up pairs,
+  avoiding the cross terms produced when factors are added separately. It also
+  supports different ranks: a rank-4 plus rank-16 module becomes rank 20.
+- Concatenation increases the output rank. Combining two rank-32 LoRAs produces
+  rank 64; four produce rank 128. This increases file size and the temporary
+  work needed while ComfyUI applies the LoRA.
+- `legacy_linear` preserves old saved workflows and factor-space results. It is
+  approximate, introduces cross terms, and requires matching shapes and ranks.
 - `exact_concat` applies weights directly and ignores `force_same_strength`.
   For an even blend, start with `weight1 = 0.5` and `weight2 = 0.5`.
 - Both modes operate only on the LoRA files; neither changes or saves the Krea 2
@@ -88,8 +92,10 @@ saving still works when Show Text is removed from a custom workflow.
 - When a PEFT checkpoint has no embedded alpha tensors, the extension uses
   `alpha = rank`. This is the only value that can be recovered from a standalone
   `.safetensors` state dictionary without its training configuration.
-- DoRA magnitude vectors and other adapter methods are not merged. LoCon
-  `lora_mid` tensors remain supported only by `legacy_linear`.
+- DoRA magnitude vectors, LoCon `lora_mid` tensors, and other adapter methods
+  are rejected instead of being silently omitted or merged incorrectly.
+- A connected third or fourth LoRA with a zero weight is ignored with a clear
+  console warning.
 
 ## Attribution
 

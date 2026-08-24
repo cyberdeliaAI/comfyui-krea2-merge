@@ -2,7 +2,7 @@
 @author: Cyberdelia
 @title: ComfyUI Krea2 Merge
 @nickname: Krea2 Merge
-@description: Load, merge, and save Krea 2 PEFT/Diffusers and Kohya LoRAs.
+@description: Exact mixed-rank merging for Krea 2 PEFT/Diffusers and Kohya LoRAs.
 """
 
 import importlib

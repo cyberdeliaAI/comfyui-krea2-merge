@@ -4,6 +4,7 @@ const FILTER_NODE_IDS = new Set([
   "Krea2Merge_LoadLoRA",
   "Krea2Merge_ApplyLoRA",
 ]);
+const filterRefreshers = new WeakMap();
 
 app.registerExtension({
   name: "Krea2Merge.LoraFolderFilter",
@@ -51,6 +52,12 @@ app.registerExtension({
       updateLoraList();
     };
 
+    filterRefreshers.set(node, updateLoraList);
     updateLoraList();
+  },
+
+  loadedGraphNode(node) {
+    if (!FILTER_NODE_IDS.has(node.comfyClass)) return;
+    filterRefreshers.get(node)?.();
   },
 });

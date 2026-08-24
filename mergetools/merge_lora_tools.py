@@ -31,6 +31,7 @@ LORA_PAIR_MARKERS = (
     ('.lora_down', '.lora_up', 'kohya'),
     ('.lora_A', '.lora_B', 'peft'),
 )
+DORA_MARKERS = ('.lora_magnitude_vector', '.dora_scale')
 
 
 def _lora_module_from_key(key):
@@ -177,8 +178,8 @@ class Krea2MergeApplyLoRA:
 class Krea2MergeLoRAs:
     """Merge Krea 2/PEFT and Kohya LoRA state dictionaries.
 
-    * `legacy_linear` preserves the original factor-space merge behavior.
-    * `exact_concat` composes differently ranked LoRAs without changing the base model.
+    * `exact_concat` is the default and composes weighted LoRAs without cross terms.
+    * `legacy_linear` preserves the original approximate factor-space behavior.
     * `force_same_strength=yes` applies only to `legacy_linear`.
     * Supports both `lora_A/lora_B` (PEFT/Diffusers, including Krea 2) and
       `lora_down/lora_up` (Kohya) keys.
@@ -189,14 +190,24 @@ class Krea2MergeLoRAs:
         return {
             "required": {
                 "model1": ("MODEL",),
-                "weight1": ("FLOAT", {"default": 1.00,"step": 0.01}),
+                "weight1": ("FLOAT", {"default": 0.50, "min": -4.0, "max": 4.0, "step": 0.01}),
                 "model2": ("MODEL",),
-                "weight2": ("FLOAT", {"default": 1.00,"step": 0.01}),
-                "weight3": ("FLOAT", {"default": 0.00,"step": 0.01}),
-                "weight4": ("FLOAT", {"default": 0.00,"step": 0.01}),
-                "force_same_strength": (["no", "yes"], {"default": "no"}),
+                "weight2": ("FLOAT", {"default": 0.50, "min": -4.0, "max": 4.0, "step": 0.01}),
+                "weight3": ("FLOAT", {"default": 0.00, "min": -4.0, "max": 4.0, "step": 0.01}),
+                "weight4": ("FLOAT", {"default": 0.00, "min": -4.0, "max": 4.0, "step": 0.01}),
+                "force_same_strength": (["no", "yes"], {
+                    "default": "no",
+                    "tooltip": "Legacy mode only. Ignored by exact_concat.",
+                }),
                 "save_dtype": (["fp16", "float", "bf16"], {"default": "fp16"}),
-                "merge_mode": (["legacy_linear", "exact_concat"], {"default": "legacy_linear"}),
+                "merge_mode": (["exact_concat", "legacy_linear"], {
+                    "default": "exact_concat",
+                    "tooltip": (
+                        "exact_concat performs an exact weighted merge and supports "
+                        "different ranks. legacy_linear preserves the original "
+                        "approximate factor-space behavior."
+                    ),
+                }),
             },
             "optional": {
                 "model3": ("MODEL",),
@@ -208,6 +219,11 @@ class Krea2MergeLoRAs:
     RETURN_NAMES = ("merged_model",)
     FUNCTION = "merge"
     CATEGORY = "Krea2 Merge/LoRA"
+    DESCRIPTION = (
+        "Exactly merge two to four Krea 2/PEFT or Kohya LoRAs, including "
+        "different ranks. The legacy approximate merge remains available for "
+        "existing workflows."
+    )
 
     # ---------- helpers ----------
     def _safe_scalar(self, value):
@@ -377,7 +393,14 @@ class Krea2MergeLoRAs:
     # ---------- main ----------
     def merge(self, model1, weight1, model2, weight2,
               weight3, weight4, force_same_strength, save_dtype,
-              merge_mode="legacy_linear", model3=None, model4=None):
+              merge_mode="exact_concat", model3=None, model4=None):
+
+        for slot, model, weight in ((3, model3, weight3), (4, model4, weight4)):
+            if model is not None and weight == 0:
+                print(
+                    f"Krea2 Merge warning: model{slot} is connected but "
+                    f"weight{slot} is 0, so that LoRA is ignored."
+                )
 
         models_with_w = [(model1, weight1), (model2, weight2)]
         if model3 is not None:
@@ -397,6 +420,21 @@ class Krea2MergeLoRAs:
         for index, (sd, _) in enumerate(models_with_w, start=1):
             if not hasattr(sd, 'items'):
                 raise TypeError(f"Input model {index} is not a LoRA state dictionary.")
+            dora_key = next(
+                (key for key in sd if any(marker in key for marker in DORA_MARKERS)),
+                None,
+            )
+            if dora_key is not None:
+                raise ValueError(
+                    f"Input model {index} contains DoRA weights ('{dora_key}'). "
+                    "DoRA merging is not supported; refusing to save a partial "
+                    "or behavior-changing adapter."
+                )
+            if any('.lora_mid' in key for key in sd):
+                raise ValueError(
+                    f"Input model {index} contains LoCon lora_mid weights. "
+                    "They cannot be merged correctly by either merge mode."
+                )
             if not any(_lora_module_from_key(key) is not None for key in sd):
                 raise ValueError(
                     f"Input model {index} has no supported LoRA weights. "
@@ -433,6 +471,12 @@ class Krea2MergeLoRAs:
             )
         if merge_mode != "legacy_linear":
             raise ValueError(f"Unknown merge mode: {merge_mode}")
+
+        print(
+            "Krea2 Merge warning: legacy_linear is an approximate compatibility "
+            "mode and introduces cross terms. Use exact_concat for an exact "
+            "weighted merge."
+        )
 
         # --- 2. Actual merging ---
         merged_sd: dict[str, torch.Tensor] = {}

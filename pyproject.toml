@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-krea2-merge"
-description = "ComfyUI nodes for loading, merging, and saving Krea 2 PEFT/Diffusers and Kohya LoRAs."
-version = "1.1.0"
+description = "Merge 2–4 Krea 2 LoRAs in ComfyUI with exact mixed-rank PEFT/Diffusers and Kohya composition, weighted blending, BF16/FP16 output, and safe saving."
+version = "1.2.0"
 authors = [{name = "Cyberdelia"}]
 license = {file = "LICENSE"}
 readme = "README.md"
