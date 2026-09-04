@@ -1,5 +1,12 @@
 # ComfyUI Krea2 Merge
 
+<p align="center">
+  <img src="assets/icon.png" alt="ComfyUI Krea2 Merge icon" width="200">
+</p>
+
+[![Tests](https://github.com/cyberdeliaAI/comfyui-krea2-merge/actions/workflows/tests.yml/badge.svg)](https://github.com/cyberdeliaAI/comfyui-krea2-merge/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ComfyUI Krea2 Merge is a standalone set of nodes for exactly combining two to
 four Krea 2 LoRAs without loading or modifying the base model. It supports the
 PEFT/Diffusers `lora_A` + `lora_B` keys used by Krea 2 LoRAs, while retaining
