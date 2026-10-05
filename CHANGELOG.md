@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-10-05
 
 - Added the optional `svd_truncate` merge mode and a `target_rank` input. It
   composes LoRAs exactly, then limits each module to `target_rank` with an
