@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import tempfile
 import types
@@ -326,6 +327,224 @@ class Krea2MergeLoRAsTests(unittest.TestCase):
             self.exact_merge(self.peft_model(1.0, 2.0), self.peft_model(3.0, 4.0))
         self.assertFalse(any("no shared module names" in str(call)
                              for call in print_mock.call_args_list))
+
+    # ---- svd_truncate ----
+    def random_lora(self, generator, rank, out=24, inn=18, decay=None, alpha=None,
+                    style=("lora_A", "lora_B"), module=None, kernel=None):
+        """Random LoRA; `decay` gives it a geometrically decaying spectrum."""
+        module = module or self.module
+        if kernel:
+            down = torch.randn((rank, 3, kernel, kernel), generator=generator)
+            up = torch.randn((out, rank, 1, 1), generator=generator)
+        elif decay is None:
+            down = torch.randn((rank, inn), generator=generator)
+            up = torch.randn((out, rank), generator=generator)
+        else:
+            root = torch.tensor([decay ** i for i in range(rank)]).sqrt()
+            up = torch.linalg.qr(torch.randn((out, rank), generator=generator))[0] * root
+            down = (torch.linalg.qr(torch.randn((inn, rank), generator=generator))[0] * root).T
+        state = {f"{module}.{style[0]}.weight": down, f"{module}.{style[1]}.weight": up}
+        if alpha is not None:
+            state[f"{module}.alpha"] = torch.tensor(float(alpha))
+        return state
+
+    def dense_delta(self, state, style=("lora_A", "lora_B"), module=None):
+        module = module or self.module
+        down = state[f"{module}.{style[0]}.weight"].double()
+        up = state[f"{module}.{style[1]}.weight"].double()
+        rank = down.shape[0]
+        alpha = state[f"{module}.alpha"].item() if f"{module}.alpha" in state else rank
+        return alpha / rank * (up.flatten(1) @ down.flatten(1))
+
+    def best_rank(self, matrix, rank):
+        u, s, vh = torch.linalg.svd(matrix, full_matrices=False)
+        return (u[:, :rank] * s[:rank]) @ vh[:rank]
+
+    def svd_merge(self, first, second, weight1=0.7, weight2=-0.3, target_rank=8,
+                  save_dtype="float"):
+        with patch("builtins.print") as print_mock:
+            merged = self.merger.merge(
+                model1=first, weight1=weight1, model2=second, weight2=weight2,
+                weight3=0.0, weight4=0.0, force_same_strength="no",
+                save_dtype=save_dtype, merge_mode="svd_truncate",
+                target_rank=target_rank,
+            )[0]
+        self.printed = " ".join(
+            str(call.args[0]) for call in print_mock.call_args_list if call.args
+        )
+        return merged
+
+    def test_svd_truncate_equals_exact_concat_when_budget_covers_all_ranks(self):
+        generator = torch.Generator().manual_seed(1)
+        first = self.random_lora(generator, 3)
+        second = self.random_lora(generator, 5)
+        exact = self.exact_merge(first, second, weight1=0.7, weight2=-0.3)
+        for target_rank in (8, 100):
+            with self.subTest(target_rank=target_rank):
+                merged = self.svd_merge(first, second, target_rank=target_rank)
+                self.assertEqual(merged.keys(), exact.keys())
+                for key in exact:
+                    torch.testing.assert_close(merged[key], exact[key], rtol=0, atol=0)
+                self.assertIn("no module exceeds rank", self.printed)
+
+    def test_svd_truncate_matches_optimal_dense_svd_truncation(self):
+        generator = torch.Generator().manual_seed(2)
+        first = self.random_lora(generator, 6, alpha=4.0)
+        second = self.random_lora(generator, 9, alpha=2.0)
+        exact = self.dense_delta(self.exact_merge(first, second, weight1=0.7, weight2=-0.3))
+
+        merged = self.svd_merge(first, second, target_rank=5)
+
+        self.assertEqual(tuple(merged[f"{self.module}.lora_A.weight"].shape), (5, 18))
+        self.assertEqual(tuple(merged[f"{self.module}.lora_B.weight"].shape), (24, 5))
+        self.assertEqual(merged[f"{self.module}.alpha"].item(), 5.0)
+        self.assertEqual(merged[f"{self.module}.alpha"].dtype, torch.float32)
+        torch.testing.assert_close(
+            self.dense_delta(merged), self.best_rank(exact, 5), atol=1e-4, rtol=1e-4,
+        )
+
+    def test_svd_truncate_error_equals_discarded_energy_and_shrinks_with_rank(self):
+        generator = torch.Generator().manual_seed(3)
+        first = self.random_lora(generator, 8, decay=0.6)
+        second = self.random_lora(generator, 8, decay=0.6)
+        exact = self.dense_delta(self.exact_merge(first, second, weight1=0.7, weight2=-0.3))
+        singular = torch.linalg.svdvals(exact)
+
+        errors = []
+        for target_rank in (2, 4, 8, 12):
+            with self.subTest(target_rank=target_rank):
+                merged = self.svd_merge(first, second, target_rank=target_rank)
+                error = ((self.dense_delta(merged) - exact).norm() / exact.norm()).item()
+                expected = (singular[target_rank:].square().sum()
+                            / singular.square().sum()).sqrt().item()
+                reported = float(re.search(r"([\d.]+)% overall", self.printed).group(1)) / 100
+                self.assertAlmostEqual(error, expected, delta=1e-4)
+                self.assertAlmostEqual(reported, expected, delta=1e-4)
+                errors.append(error)
+
+        self.assertEqual(errors, sorted(errors, reverse=True))
+        self.assertLess(errors[-1], errors[0])
+        exact_merge = self.svd_merge(first, second, target_rank=16)
+        torch.testing.assert_close(self.dense_delta(exact_merge), exact, atol=1e-5, rtol=1e-5)
+
+    def test_svd_truncate_supports_convolution_and_both_key_styles(self):
+        for style in (("lora_A", "lora_B"), ("lora_down", "lora_up")):
+            for kernel in (None, 3):
+                with self.subTest(style=style[0], convolution=bool(kernel)):
+                    generator = torch.Generator().manual_seed(4)
+                    first = self.random_lora(generator, 4, out=7, style=style, kernel=kernel, alpha=8.0)
+                    second = self.random_lora(generator, 6, out=7, style=style, kernel=kernel, alpha=3.0)
+                    exact = self.dense_delta(
+                        self.exact_merge(first, second, weight1=0.7, weight2=-0.3), style,
+                    )
+
+                    merged = self.svd_merge(first, second, target_rank=4)
+
+                    down = merged[f"{self.module}.{style[0]}.weight"]
+                    up = merged[f"{self.module}.{style[1]}.weight"]
+                    self.assertEqual(down.shape[0], 4)
+                    self.assertEqual(tuple(down.shape[1:]),
+                                     (3, 3, 3) if kernel else (18,))
+                    self.assertEqual(tuple(up.shape), (7, 4, 1, 1) if kernel else (7, 4))
+                    torch.testing.assert_close(
+                        self.dense_delta(merged, style), self.best_rank(exact, 4),
+                        atol=1e-4, rtol=1e-4,
+                    )
+
+    def test_svd_truncate_only_truncates_modules_over_budget(self):
+        generator = torch.Generator().manual_seed(5)
+        other = "diffusion_model.blocks.0.mlp.up"
+        first = {**self.random_lora(generator, 4),
+                 **self.random_lora(generator, 3, module=other)}
+        second = self.random_lora(generator, 6)
+
+        merged = self.svd_merge(first, second, weight1=0.7, weight2=-0.3, target_rank=6)
+
+        self.assertEqual(merged[f"{self.module}.lora_A.weight"].shape[0], 6)
+        self.assertEqual(merged[f"{other}.lora_A.weight"].shape[0], 3)
+        torch.testing.assert_close(
+            self.dense_delta(merged, module=other),
+            0.7 * self.dense_delta(first, module=other),
+        )
+        self.assertIn("reduced 1 of 2 modules to rank 6", self.printed)
+
+    def test_svd_truncate_is_deterministic_and_keeps_dtype_contract(self):
+        generator = torch.Generator().manual_seed(6)
+        first = self.random_lora(generator, 8)
+        second = self.random_lora(generator, 8)
+
+        one = self.svd_merge(first, second, target_rank=5, save_dtype="bf16")
+        two = self.svd_merge(first, second, target_rank=5, save_dtype="bf16")
+
+        for key in one:
+            self.assertTrue(torch.equal(one[key], two[key]))
+        self.assertEqual(one[f"{self.module}.lora_A.weight"].dtype, torch.bfloat16)
+        self.assertEqual(one[f"{self.module}.lora_B.weight"].dtype, torch.bfloat16)
+        self.assertEqual(one[f"{self.module}.alpha"].dtype, torch.float32)
+        self.assertEqual(one[f"{self.module}.alpha"].item(), 5.0)
+
+    def test_svd_truncate_survives_a_fully_cancelling_merge(self):
+        generator = torch.Generator().manual_seed(7)
+        lora = self.random_lora(generator, 4)
+
+        merged = self.svd_merge(lora, lora, weight1=1.0, weight2=-1.0, target_rank=2)
+
+        for tensor in merged.values():
+            self.assertTrue(torch.isfinite(tensor).all())
+        torch.testing.assert_close(
+            self.dense_delta(merged), torch.zeros(24, 18, dtype=torch.float64),
+            atol=1e-5, rtol=0,
+        )
+
+    def test_svd_truncate_rejects_invalid_target_rank(self):
+        lora = self.peft_model(1.0, 1.0)
+        for target_rank in (0, -3, 2.5, True, None, "8"):
+            with self.subTest(target_rank=target_rank):
+                with self.assertRaisesRegex(ValueError, "target_rank"):
+                    self.svd_merge(lora, lora, target_rank=target_rank)
+
+    def test_svd_truncate_rejects_non_1x1_up_kernels(self):
+        generator = torch.Generator().manual_seed(8)
+        first = self.random_lora(generator, 2, kernel=3)
+        first[f"{self.module}.lora_B.weight"] = torch.randn((7, 2, 3, 3), generator=generator)
+        second = self.random_lora(generator, 2, kernel=3)
+        second[f"{self.module}.lora_B.weight"] = torch.randn((7, 2, 3, 3), generator=generator)
+
+        with self.assertRaisesRegex(ValueError, "1x1"):
+            self.svd_merge(first, second, target_rank=2)
+
+    def test_other_modes_ignore_target_rank(self):
+        generator = torch.Generator().manual_seed(9)
+        first = self.random_lora(generator, 4)
+        second = self.random_lora(generator, 4)
+        exact = self.exact_merge(first, second)
+        with_budget = self.merger.merge(
+            model1=first, weight1=1.0, model2=second, weight2=1.0, weight3=0.0,
+            weight4=0.0, force_same_strength="no", save_dtype="float",
+            merge_mode="exact_concat", target_rank=1,
+        )[0]
+        self.assertEqual(with_budget[f"{self.module}.lora_A.weight"].shape[0], 8)
+        for key in exact:
+            torch.testing.assert_close(with_budget[key], exact[key], rtol=0, atol=0)
+        legacy = self.merger.merge(
+            model1=first, weight1=1.0, model2=second, weight2=1.0, weight3=0.0,
+            weight4=0.0, force_same_strength="no", save_dtype="float",
+            merge_mode="legacy_linear", target_rank=1,
+        )[0]
+        self.assertEqual(legacy[f"{self.module}.lora_A.weight"].shape[0], 4)
+
+    def test_ui_offers_svd_truncate_without_changing_existing_inputs(self):
+        spec = self.merger.INPUT_TYPES()
+        modes, options = spec["required"]["merge_mode"]
+        self.assertEqual(modes, ["exact_concat", "legacy_linear", "svd_truncate"])
+        self.assertEqual(options["default"], "exact_concat")
+        # Optional, so workflows saved before this input existed keep loading.
+        self.assertNotIn("target_rank", spec["required"])
+        kind, rank_options = spec["optional"]["target_rank"]
+        self.assertEqual(kind, "INT")
+        self.assertEqual(rank_options["min"], 1)
+        self.assertGreaterEqual(rank_options["default"], 1)
+        self.assertEqual(list(spec["required"])[-1], "merge_mode")
 
     def test_rejects_unsupported_adapter_state_dict(self):
         key = f"{self.module}.lora_magnitude_vector.weight"

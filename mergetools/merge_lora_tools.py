@@ -65,6 +65,38 @@ def _lora_pair_info(key):
     return None
 
 
+def _truncate_lora_factors(down, up, target_rank):
+    """Recompress LoRA factors to at most `target_rank`.
+
+    `up @ down` is factored with thin QR decompositions, so the SVD only has to
+    handle a small (rank x rank) core instead of the dense weight delta. The
+    result is the optimal rank-`target_rank` approximation of that delta.
+    Returns (down, up, discarded_energy, total_energy); the energies are squared
+    Frobenius norms, so sqrt(discarded / total) is the relative error.
+    """
+    rank = down.size(0)
+    if math.prod(up.shape[2:]) != 1:
+        raise ValueError(
+            "svd_truncate supports linear and 1x1 up/B tensors only, got up/B "
+            f"shape {tuple(up.shape)}. Use exact_concat for this LoRA."
+        )
+    q_down, r_down = torch.linalg.qr(down.reshape(rank, -1).T)
+    q_up, r_up = torch.linalg.qr(up.reshape(up.size(0), rank))
+    u, s, vh = torch.linalg.svd(r_up @ r_down.T, full_matrices=False)
+
+    keep = min(target_rank, s.numel())
+    energy = s.square()
+    root = s[:keep].sqrt()
+    new_up = q_up @ (u[:, :keep] * root)
+    new_down = (root.unsqueeze(1) * vh[:keep]) @ q_down.T
+    return (
+        new_down.reshape(keep, *down.shape[1:]),
+        new_up.reshape(up.size(0), keep, *up.shape[2:]),
+        energy[keep:].sum().item(),
+        energy.sum().item(),
+    )
+
+
 def _load_lora_state(path):
     """Use ComfyUI's safe loader, including its .sft and checkpoint handling."""
     from comfy.utils import load_torch_file
@@ -190,6 +222,8 @@ class Krea2MergeLoRAs:
     """Merge Krea 2/PEFT and Kohya LoRA state dictionaries.
 
     * `exact_concat` is the default and composes weighted LoRAs without cross terms.
+    * `svd_truncate` composes exactly, then recompresses each module to at most
+      `target_rank` with an optimal SVD truncation.
     * `legacy_linear` preserves the original approximate factor-space behavior.
     * `force_same_strength=yes` applies only to `legacy_linear`.
     * Supports both `lora_A/lora_B` (PEFT/Diffusers, including Krea 2) and
@@ -208,21 +242,31 @@ class Krea2MergeLoRAs:
                 "weight4": ("FLOAT", {"default": 0.00, "min": -4.0, "max": 4.0, "step": 0.01}),
                 "force_same_strength": (["no", "yes"], {
                     "default": "no",
-                    "tooltip": "Legacy mode only. Ignored by exact_concat.",
+                    "tooltip": "Legacy mode only. Ignored by exact_concat and svd_truncate.",
                 }),
                 "save_dtype": (["fp16", "float", "bf16"], {"default": "fp16"}),
-                "merge_mode": (["exact_concat", "legacy_linear"], {
+                "merge_mode": (["exact_concat", "legacy_linear", "svd_truncate"], {
                     "default": "exact_concat",
                     "tooltip": (
                         "exact_concat performs an exact weighted merge and supports "
-                        "different ranks. legacy_linear preserves the original "
-                        "approximate factor-space behavior."
+                        "different ranks; the output rank is the sum of the input "
+                        "ranks. svd_truncate does the same, then limits every module "
+                        "to target_rank (smaller file, small approximation error). "
+                        "legacy_linear preserves the original approximate "
+                        "factor-space behavior."
                     ),
                 }),
             },
             "optional": {
                 "model3": ("MODEL",),
                 "model4": ("MODEL",),
+                "target_rank": ("INT", {
+                    "default": 32, "min": 1, "max": 512, "step": 1,
+                    "tooltip": (
+                        "svd_truncate only: maximum output rank per module. Modules "
+                        "whose combined rank is already within it stay exact."
+                    ),
+                }),
             }
         }
 
@@ -232,7 +276,8 @@ class Krea2MergeLoRAs:
     CATEGORY = "Krea2 Merge/LoRA"
     DESCRIPTION = (
         "Exactly merge two to four Krea 2/PEFT or Kohya LoRAs, including "
-        "different ranks. The legacy approximate merge remains available for "
+        "different ranks, optionally limiting the output rank with an optimal "
+        "SVD truncation. The legacy approximate merge remains available for "
         "existing workflows."
     )
 
@@ -326,11 +371,16 @@ class Krea2MergeLoRAs:
         return pairs
 
     def _merge_exact_concat(self, models_with_w, module_alphas_list, final_dtype,
-                            force_same_strength):
-        """Represent a weighted sum exactly by concatenating LoRA ranks."""
+                            force_same_strength, target_rank=None):
+        """Represent a weighted sum exactly by concatenating LoRA ranks.
+
+        With `target_rank`, modules whose combined rank exceeds it are then
+        recompressed by an optimal SVD truncation (the svd_truncate mode).
+        """
         if force_same_strength == "yes":
             print(
-                "Krea2 Merge: force_same_strength is ignored by exact_concat; "
+                "Krea2 Merge: force_same_strength is ignored by "
+                f"{'exact_concat' if target_rank is None else 'svd_truncate'}; "
                 "weights are applied directly."
             )
 
@@ -346,6 +396,7 @@ class Krea2MergeLoRAs:
             )
 
         merged_sd = {}
+        truncated = []
         for module in modules:
             entries = []
             for (_, ratio), alphas, pairs in zip(
@@ -390,6 +441,12 @@ class Krea2MergeLoRAs:
 
             merged_down = torch.cat(down_parts, dim=0)
             merged_up = torch.cat(up_parts, dim=1)
+
+            if target_rank is not None and merged_down.size(0) > target_rank:
+                merged_down, merged_up, discarded, total = _truncate_lora_factors(
+                    merged_down, merged_up, target_rank
+                )
+                truncated.append((discarded, total))
             output_rank = merged_down.size(0)
 
             merged_sd[first_pair["down_key"]] = merged_down.to(dtype=final_dtype)
@@ -398,12 +455,38 @@ class Krea2MergeLoRAs:
                 float(output_rank), dtype=torch.float32
             )
 
+        if target_rank is not None:
+            if truncated:
+                relative = [math.sqrt(d / t) if t > 0 else 0.0 for d, t in truncated]
+                overall = math.sqrt(
+                    sum(d for d, _ in truncated)
+                    / max(sum(t for _, t in truncated), 1e-30)
+                )
+                print(
+                    f"Krea2 Merge: svd_truncate reduced {len(truncated)} of "
+                    f"{len(modules)} modules to rank {target_rank}; relative "
+                    f"error of those modules {overall:.2%} overall, "
+                    f"{max(relative):.2%} worst."
+                )
+            else:
+                print(
+                    f"Krea2 Merge: no module exceeds rank {target_rank}, so "
+                    "svd_truncate gives the same exact result as exact_concat."
+                )
+
         return merged_sd
     
     # ---------- main ----------
     def merge(self, model1, weight1, model2, weight2,
               weight3, weight4, force_same_strength, save_dtype,
-              merge_mode="exact_concat", model3=None, model4=None):
+              merge_mode="exact_concat", model3=None, model4=None, target_rank=32):
+
+        if merge_mode == "svd_truncate":
+            if (isinstance(target_rank, bool) or not isinstance(target_rank, int)
+                    or target_rank < 1):
+                raise ValueError(
+                    f"target_rank must be a whole number of at least 1, got {target_rank!r}."
+                )
 
         for slot, model, weight in ((3, model3, weight3), (4, model4, weight4)):
             if model is not None and weight == 0:
@@ -496,13 +579,14 @@ class Krea2MergeLoRAs:
         dtype_map = {"fp16": torch.float16, "float": torch.float32, "bf16": torch.bfloat16}
         final_dtype = dtype_map[save_dtype]
 
-        if merge_mode == "exact_concat":
+        if merge_mode in ("exact_concat", "svd_truncate"):
             return (
                 self._merge_exact_concat(
                     models_with_w,
                     module_alphas_list,
                     final_dtype,
                     force_same_strength,
+                    target_rank if merge_mode == "svd_truncate" else None,
                 ),
             )
         if merge_mode != "legacy_linear":

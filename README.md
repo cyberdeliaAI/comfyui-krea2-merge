@@ -24,6 +24,8 @@ output folder. It can therefore be installed alongside the original
 - Infer missing alpha values from the LoRA rank.
 - Handle negative merge weights correctly for both `lora_B` and `lora_up`.
 - Exactly merge LoRAs with equal or different ranks without unwanted cross terms.
+- Optionally cap the output rank with `svd_truncate`, an optimal SVD truncation
+  that reports its approximation error.
 - Enter positive or negative weights from `-4.0` to `4.0`.
 - Report unsupported files and incompatible tensor shapes clearly.
 - Load `.safetensors`, `.sft`, and supported PyTorch checkpoints through ComfyUI's safe loader.
@@ -64,8 +66,10 @@ collide with the original extension.
 3. Set `weight1` and `weight2`. Optional third and fourth inputs use `weight3`
    and `weight4`.
 4. Keep the default `exact_concat` for a mathematically exact weighted merge.
-   `legacy_linear` remains available only for compatibility with the original
-   approximate factor-space behavior.
+   Choose `svd_truncate` instead when you want a smaller file: it limits every
+   module to `target_rank` (see the compatibility notes). `legacy_linear`
+   remains available only for compatibility with the original approximate
+   factor-space behavior.
 5. Select the output precision. `fp16` is the practical default; use `bf16` if
    that matches your Krea 2 setup.
 6. Connect **Krea2 Merge • Save LoRA** and choose a filename ending in
@@ -99,11 +103,24 @@ saving still works when Show Text is removed from a custom workflow.
 - Concatenation increases the output rank. Combining two rank-32 LoRAs produces
   rank 64; four produce rank 128. This increases file size and the temporary
   work needed while ComfyUI applies the LoRA.
+- `svd_truncate` first composes the LoRAs exactly like `exact_concat`, then limits
+  each module to at most `target_rank` (default 32, only used by this mode). It
+  keeps the best possible rank-`target_rank` approximation of the merged weight
+  delta (an optimal SVD truncation), so the output rank no longer grows with the
+  number of inputs. Modules whose combined rank is already within `target_rank`
+  stay exact. The result is deterministic, and the console reports the relative
+  error of the truncated modules. The error is the share of the merged delta
+  that lies beyond `target_rank`: it is small for LoRAs with a decaying
+  spectrum and large for LoRAs whose rank is fully used, so pick a
+  `target_rank` close to the summed input ranks when fidelity matters. Only
+  linear and 1x1-up (LoCon-style) modules are supported; use `exact_concat`
+  otherwise.
 - `legacy_linear` preserves old saved workflows and factor-space results. It is
   approximate, introduces cross terms, and requires matching shapes and ranks.
-- `exact_concat` applies weights directly and ignores `force_same_strength`.
+- `exact_concat` and `svd_truncate` apply weights directly and ignore
+  `force_same_strength`.
   For an even blend, start with `weight1 = 0.5` and `weight2 = 0.5`.
-- Both modes operate only on the LoRA files; neither changes or saves the Krea 2
+- All modes operate only on the LoRA files; none changes or saves the Krea 2
   base model.
 - When a PEFT checkpoint has no embedded alpha tensors, the extension uses
   `alpha = rank` (unit scaling). This is a fallback assumption: the original

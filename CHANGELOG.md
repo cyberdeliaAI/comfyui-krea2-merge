@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Added the optional `svd_truncate` merge mode and a `target_rank` input. It
+  composes LoRAs exactly, then limits each module to `target_rank` with an
+  optimal SVD truncation, so the output rank does not grow with the number of
+  inputs. Modules already within the budget stay exact, the result is
+  deterministic, and the console reports the relative error of truncated
+  modules. The default mode stays `exact_concat`.
+- `target_rank` is an optional input, so workflows and API prompts saved before
+  it existed load and run unchanged.
+- Added tests that measure the truncation error against `exact_concat` and the
+  dense SVD optimum, including convolution, both key styles, dtype and
+  invalid-input checks.
+
 ## 1.2.1 - 2026-10-05
 
 - Preserve missing LoRA filenames when loading workflows or changing folder
