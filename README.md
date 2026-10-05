@@ -26,7 +26,9 @@ output folder. It can therefore be installed alongside the original
 - Exactly merge LoRAs with equal or different ranks without unwanted cross terms.
 - Enter positive or negative weights from `-4.0` to `4.0`.
 - Report unsupported files and incompatible tensor shapes clearly.
-- Save to `ComfyUI/models/loras/krea2-merged-loras` by default.
+- Load `.safetensors`, `.sft`, and supported PyTorch checkpoints through ComfyUI's safe loader.
+- Save only inside `ComfyUI/models/loras/krea2-merged-loras`, including subfolders.
+- Keep alpha in float32 even when the factor tensors use FP16 or BF16.
 - Keep merge results independent of input order for equal weights.
 
 ## Installation
@@ -67,9 +69,16 @@ collide with the original extension.
 5. Select the output precision. `fp16` is the practical default; use `bf16` if
    that matches your Krea 2 setup.
 6. Connect **Krea2 Merge • Save LoRA** and choose a filename ending in
-   `.safetensors`.
+   `.safetensors` or `.sft`, optionally inside a subfolder such as
+   `characters/my_merge.safetensors`.
 7. Set `allow_overwrite` to `yes` when repeated runs should replace the same
    output file. Keep it on `no` to protect an existing merge.
+
+Since version 1.2.1, output paths must stay inside `krea2-merged-loras`.
+Absolute paths, `..`, and symlinks leading outside that folder are rejected.
+If an older workflow uses an absolute output path, replace it with a filename
+or relative subfolder. Supported output extensions are `.safetensors`, `.sft`,
+`.pt`, `.pth`, `.ckpt`, and `.bin`.
 
 On Windows, overwrite first moves the previous output to a temporary backup. If
 the new save fails, the original file is restored automatically. If Windows has
@@ -97,10 +106,20 @@ saving still works when Show Text is removed from a custom workflow.
 - Both modes operate only on the LoRA files; neither changes or saves the Krea 2
   base model.
 - When a PEFT checkpoint has no embedded alpha tensors, the extension uses
-  `alpha = rank`. This is the only value that can be recovered from a standalone
-  `.safetensors` state dictionary without its training configuration.
-- DoRA magnitude vectors, LoCon `lora_mid` tensors, and other adapter methods
-  are rejected instead of being silently omitted or merged incorrectly.
+  `alpha = rank` (unit scaling). This is a fallback assumption: the original
+  training alpha cannot be recovered from the factors alone. Files that rely
+  on a separate non-default training alpha need that scaling supplied first.
+- Alpha is always saved in float32. `save_dtype` controls the factor tensors;
+  it does not reduce alpha precision.
+- DoRA, LoCon `lora_mid`, LoHa/LoKr, `diff`/`diff_b`, factor biases, and other
+  unrecognized adapter keys are rejected in both modes instead of being
+  silently omitted or merged incorrectly.
+- Inputs should use the same base model and module naming convention. A warning
+  appears when two inputs have no shared module names; separate target layers
+  can be valid, but differently named aliases for the same layer are not
+  converted or combined. Matching shapes alone do not establish compatibility.
+- A missing LoRA filename in a saved workflow is retained so ComfyUI can report
+  the missing file. Select its replacement explicitly in the Load or Apply node.
 - A connected third or fourth LoRA with a zero weight is ignored with a clear
   console warning.
 

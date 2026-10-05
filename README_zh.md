@@ -18,7 +18,9 @@ ComfyUI Krea2 Merge 是一个独立的 ComfyUI 扩展，无需加载或修改底
 - 正确处理负权重，并对不兼容的张量形状给出明确错误。
 - 可通过 `exact_concat` 模式合并不同 rank 的 LoRA。
 - 支持从 `-4.0` 到 `4.0` 的正负权重。
-- 默认保存到 `ComfyUI/models/loras/krea2-merged-loras`。
+- 通过 ComfyUI 的安全加载器加载 `.safetensors`、`.sft` 和 PyTorch checkpoint。
+- 仅保存到 `ComfyUI/models/loras/krea2-merged-loras` 及其子目录。
+- 即使因子张量使用 FP16 或 BF16，alpha 仍以 float32 保存。
 
 ## 安装
 
@@ -44,6 +46,11 @@ Save 节点本身也已注册为输出节点。
 Save 节点的 `allow_overwrite` 可控制是否覆盖已存在的输出文件。
 在 Windows 上，覆盖前会先备份原文件；保存失败时会自动恢复。
 
+从 1.2.1 起，输出必须使用相对文件名或子目录，例如
+`characters/my_merge.safetensors`。绝对路径、`..` 和指向输出目录外部的符号链接
+会被拒绝。旧工作流中的绝对输出路径需要改为相对文件名。
+支持的输出扩展名为 `.safetensors`、`.sft`、`.pt`、`.pth`、`.ckpt` 和 `.bin`。
+
 ## 兼容性
 
 `exact_concat` 是默认模式，可精确合并完整的 A/B 或 down/up 对，并避免分别
@@ -51,8 +58,14 @@ Save 节点的 `allow_overwrite` 可控制是否覆盖已存在的输出文件�
 输出 rank 20。`legacy_linear` 仅用于兼容旧工作流，它是近似算法，并要求共享
 键具有相同的形状和 rank。`exact_concat` 直接使用权重，并忽略
 `force_same_strength`。两种模式都不会修改 Krea 2 底模。当 PEFT 文件不包含
-alpha 时，本扩展使用 `alpha = rank`。DoRA、LoCon `lora_mid` 和其他不支持的
-adapter 会明确报错，而不会被静默丢弃或错误合并。
+alpha 时，本扩展假设 `alpha = rank`，即单位缩放；原始训练 alpha 无法仅从因子
+恢复，非默认缩放需要先单独提供。alpha 始终保存为 float32，以避免 BF16 舍入。
+DoRA、LoCon `lora_mid`、LoHa/LoKr、`diff`/`diff_b`、因子偏置和其他不支持的
+adapter 键在两种模式下都会明确报错。
+
+输入应使用相同底模和模块命名方式。两个输入没有共享模块名时会发出警告，
+但仍保留各自模块；PEFT/Kohya 的不同命名不会自动转换或合并。
+工作流中的 LoRA 文件缺失时会保留原文件名，由 ComfyUI 报错，避免静默换成其他文件。
 
 ## 致谢
 

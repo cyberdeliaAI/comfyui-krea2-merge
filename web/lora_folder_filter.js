@@ -36,7 +36,10 @@ app.registerExtension({
       }
 
       loraNamesWidget.options.values = filteredList;
-      if (!filteredList.includes(loraNamesWidget.value)) {
+      // Preserve missing files from saved workflows so ComfyUI reports the
+      // unavailable LoRA instead of silently loading a different one.
+      if (fullLoraList.includes(loraNamesWidget.value) &&
+          !filteredList.includes(loraNamesWidget.value)) {
         loraNamesWidget.value = filteredList[0] ?? "";
       }
 

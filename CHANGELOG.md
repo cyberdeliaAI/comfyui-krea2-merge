@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.1 - 2026-10-05
+
+- Preserve missing LoRA filenames when loading workflows or changing folder
+  filters, allowing ComfyUI to report the missing file instead of silently
+  selecting another LoRA.
+- Reject unsupported adapter data in both merge modes, including `diff`,
+  `diff_b`, LoHa/LoKr tensors, normalization weights, and factor biases.
+- Restrict Save LoRA to relative filenames and subfolders inside
+  `krea2-merged-loras`. Reject absolute paths, parent traversal, symlink escapes,
+  and unsupported output extensions before touching existing files.
+- Use ComfyUI's safe checkpoint loader for Load and Apply, including `.sft`
+  support. Save `.sft` files as safetensors as well.
+- Keep alpha tensors in float32 in both merge modes, preventing BF16 from
+  rounding an output rank of 259 to an alpha of 260.
+- Warn when two inputs have no shared module names. Preserve their separate
+  modules without attempting to translate PEFT/Kohya naming conventions.
+- Add seeded random matrix and convolution checks, real checkpoint round trips,
+  save-path and overwrite regression tests, and frontend lifecycle tests in CI.
+
 ## 1.2.0 - 2026-08-24
 
 - Made `exact_concat` the default merge mode for mathematically exact weighted

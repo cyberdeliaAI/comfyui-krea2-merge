@@ -1,5 +1,6 @@
 import torch
 import os
+import ntpath
 import math
 import uuid
 import folder_paths
@@ -8,13 +9,12 @@ import folder_paths
 # Optional safetensors support flag (keep both names for legacy checks)
 # -------------------------------------------------------------------
 try:
-    from safetensors.torch import load_file as safe_load, save_file as safe_save
+    from safetensors.torch import save_file as safe_save
     SAFETENSORS = True
     safetensors_available = True   # legacy alias
 except ImportError:
     SAFETENSORS = False
     safetensors_available = False
-    safe_load = None
     safe_save = None
 
 # -------------------------------------------------------------------
@@ -58,11 +58,47 @@ def _is_up_weight(key):
 def _lora_pair_info(key):
     """Return (module, role, style) for a paired LoRA factor key."""
     for down_marker, up_marker, style in LORA_PAIR_MARKERS:
-        if down_marker in key:
-            return key[:key.find(down_marker)], 'down', style
-        if up_marker in key:
-            return key[:key.find(up_marker)], 'up', style
+        for marker, role in ((down_marker, 'down'), (up_marker, 'up')):
+            module, found, suffix = key.partition(marker)
+            if found and suffix in ('', '.weight', '.default.weight'):
+                return module, role, style
     return None
+
+
+def _load_lora_state(path):
+    """Use ComfyUI's safe loader, including its .sft and checkpoint handling."""
+    from comfy.utils import load_torch_file
+
+    return load_torch_file(path, safe_load=True)
+
+
+def _resolve_output_path(filename):
+    """Keep output files and symlink targets inside the configured merge folder."""
+    if not isinstance(filename, str) or not filename.strip():
+        raise ValueError("Choose a LoRA output filename.")
+    # Check both separator conventions so workflows behave the same on Windows
+    # and POSIX, and do not permit Windows drive paths or alternate data streams.
+    parts = filename.replace('\\', '/').split('/')
+    if (os.path.isabs(filename) or ntpath.isabs(filename)
+            or ntpath.splitdrive(filename)[0] or '..' in parts
+            or ':' in filename):
+        raise ValueError(
+            "LoRA output must be a relative filename or subfolder inside "
+            "OUTPUT_DIR (krea2-merged-loras); absolute paths and '..' are not allowed."
+        )
+    if os.path.splitext(filename)[1].lower() not in (
+        '.safetensors', '.sft', '.pt', '.pth', '.ckpt', '.bin',
+    ):
+        raise ValueError("Use a LoRA output extension such as .safetensors or .sft.")
+    root = os.path.realpath(OUTPUT_DIR)
+    output = os.path.realpath(os.path.join(root, *parts))
+    try:
+        inside = os.path.commonpath((root, output)) == root and output != root
+    except ValueError:
+        inside = False
+    if not inside:
+        raise ValueError("LoRA output resolves outside OUTPUT_DIR (krea2-merged-loras).")
+    return output
 
 # =============================================================================
 # Krea2MergeLoadLoRA
@@ -95,12 +131,7 @@ class Krea2MergeLoadLoRA:
         if not lora_path or not os.path.exists(lora_path):
             raise FileNotFoundError(lora_name)
 
-        if lora_path.endswith('.safetensors'):
-            if not SAFETENSORS or safe_load is None:
-                raise ImportError('pip install safetensors to load .safetensors')
-            state_dict = safe_load(lora_path, device='cpu')
-        else:
-            state_dict = torch.load(lora_path, map_location='cpu')
+        state_dict = _load_lora_state(lora_path)
         return (state_dict,)
 
 
@@ -146,31 +177,11 @@ class Krea2MergeApplyLoRA:
         except Exception as e:
             raise ImportError("Cannot import comfy.sd helper: " + str(e))
 
-        # Helper: load to state-dict (for Comfy versions that require dict)
-        def _load_state(p):
-            if p.endswith('.safetensors'):
-                if not SAFETENSORS or safe_load is None:
-                    raise ImportError('pip install safetensors to load .safetensors')
-                return safe_load(p, device='cpu')
-            else:
-                import torch
-                return torch.load(p, map_location='cpu')
-
-        # Try both calling conventions for better compatibility.
-        # 1) Prefer passing dict (newer implementations often expect a dict)
-        last_err = None
-        try:
-            sd_dict = _load_state(lora_path)
-            new_model, _ = comfy_sd.load_lora_for_models(model, None, sd_dict, strength_model, 0.0)
-            return (new_model,)
-        except Exception as e:
-            last_err = e
-            # Fallback 2) pass file path string
-            try:
-                new_model, _ = comfy_sd.load_lora_for_models(model, None, lora_path, strength_model, 0.0)
-                return (new_model,)
-            except Exception as e2:
-                raise RuntimeError(f"load_lora_for_models failed (dict -> {last_err}); (path -> {e2})")
+        sd_dict = _load_lora_state(lora_path)
+        new_model, _ = comfy_sd.load_lora_for_models(
+            model, None, sd_dict, strength_model, 0.0,
+        )
+        return (new_model,)
 
 # =============================================================================
 # Krea2MergeLoRAs
@@ -268,8 +279,7 @@ class Krea2MergeLoRAs:
         for key, tensor in state_dict.items():
             if '.lora_mid' in key:
                 raise ValueError(
-                    "exact_concat does not support LoCon lora_mid tensors. "
-                    "Use legacy_linear for LoRAs with lora_mid weights."
+                    "LoCon lora_mid tensors cannot be merged correctly by either merge mode."
                 )
 
             info = _lora_pair_info(key)
@@ -385,7 +395,7 @@ class Krea2MergeLoRAs:
             merged_sd[first_pair["down_key"]] = merged_down.to(dtype=final_dtype)
             merged_sd[first_pair["up_key"]] = merged_up.to(dtype=final_dtype)
             merged_sd[f"{module}.alpha"] = torch.tensor(
-                float(output_rank), dtype=final_dtype
+                float(output_rank), dtype=torch.float32
             )
 
         return merged_sd
@@ -435,6 +445,17 @@ class Krea2MergeLoRAs:
                     f"Input model {index} contains LoCon lora_mid weights. "
                     "They cannot be merged correctly by either merge mode."
                 )
+            for key, value in sd.items():
+                if key.endswith('.alpha'):
+                    continue
+                if _lora_pair_info(key) is None:
+                    raise ValueError(
+                        f"Input model {index} contains an unsupported adapter key "
+                        f"('{key}'). Only lora_A/lora_B or lora_down/lora_up "
+                        "factors and alpha are supported; refusing to drop adapter data."
+                    )
+                if not isinstance(value, torch.Tensor):
+                    raise TypeError(f"LoRA factor '{key}' in input model {index} is not a tensor.")
             if not any(_lora_module_from_key(key) is not None for key in sd):
                 raise ValueError(
                     f"Input model {index} has no supported LoRA weights. "
@@ -455,6 +476,21 @@ class Krea2MergeLoRAs:
         # average to get base α
         for m, (s, c) in merged_base_alpha.items():
             merged_base_alpha[m] = s / c
+
+        module_names = [
+            {info[0] for key in sd if (info := _lora_pair_info(key)) is not None}
+            for sd, _ in models_with_w
+        ]
+        for i, names in enumerate(module_names):
+            for j in range(i + 1, len(module_names)):
+                if names.isdisjoint(module_names[j]):
+                    print(
+                        f"Krea2 Merge warning: input models {i + 1} and {j + 1} "
+                        "have no shared module names. This can mean different target "
+                        "layers or incompatible key naming (for example PEFT vs Kohya). "
+                        "Keys are preserved without conversion; verify that the LoRAs "
+                        "use the same base model and naming convention."
+                    )
 
         # dtype
         dtype_map = {"fp16": torch.float16, "float": torch.float32, "bf16": torch.bfloat16}
@@ -512,11 +548,11 @@ class Krea2MergeLoRAs:
 
         # --- 3. Write back averaged α keys ---
         for module, base_alpha in merged_base_alpha.items():
-            merged_sd[f"{module}.alpha"] = torch.tensor(base_alpha, dtype=final_dtype)
+            merged_sd[f"{module}.alpha"] = torch.tensor(base_alpha, dtype=torch.float32)
 
         # cast
         for k in list(merged_sd.keys()):
-            if merged_sd[k].dtype != final_dtype:
+            if not k.endswith('.alpha') and merged_sd[k].dtype != final_dtype:
                 merged_sd[k] = merged_sd[k].to(dtype=final_dtype)
 
         return (merged_sd, )
@@ -530,7 +566,10 @@ class Krea2MergeSaveLoRA:
         return {
             "required": {
                 "merged_model": ("MODEL", ),
-                "modeloutput": ("STRING", {"default": "krea2_merged_lora.safetensors"}),
+                "modeloutput": ("STRING", {
+                    "default": "krea2_merged_lora.safetensors",
+                    "tooltip": "Filename or subfolder inside krea2-merged-loras. Absolute paths and '..' are not allowed.",
+                }),
                 "allow_overwrite": (["no", "yes"], {"default": "no"}),
             }
         }
@@ -541,9 +580,8 @@ class Krea2MergeSaveLoRA:
     OUTPUT_NODE = True
 
     def save(self, merged_model, modeloutput, allow_overwrite="no"):
-        if not os.path.isabs(modeloutput):
-            os.makedirs(OUTPUT_DIR, exist_ok=True)
-            modeloutput = os.path.join(OUTPUT_DIR, modeloutput)
+        modeloutput = _resolve_output_path(modeloutput)
+        os.makedirs(os.path.dirname(modeloutput), exist_ok=True)
 
         backup_path = None
         if os.path.exists(modeloutput):
@@ -563,7 +601,7 @@ class Krea2MergeSaveLoRA:
                 ) from error
 
         try:
-            if modeloutput.endswith(".safetensors"):
+            if modeloutput.lower().endswith((".safetensors", ".sft")):
                 if not safetensors_available or safe_save is None:
                     raise ImportError("pip install safetensors to save .safetensors")
                 safe_save(merged_model, modeloutput)
